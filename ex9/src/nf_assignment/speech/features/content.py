@@ -16,6 +16,12 @@ from nf_assignment.speech.features.alignment import (
     normalize_rows,
     repeat_upsample_frames,
 )
+# ChatGPT
+from nf_assignment.speech.features.world import (
+    WorldFeatureConfig,
+    analyze_world,
+    world_aux_features,
+)
 
 HUBERT_EXPECTED_SAMPLE_RATE = 16000
 HUBERT_FRAME_PERIOD_MS = 20.0
@@ -206,7 +212,7 @@ def extract_resampled_condition_features(
     """
 
     requested = tuple(conditions)
-    unsupported = sorted(set(requested) - {"hubert_soft", "ppg"})
+    unsupported = sorted(set(requested) - {"hubert_soft", "ppg", "world_aux"})
     if unsupported:
         raise ValueError(f"Unsupported condition features: {unsupported}")
     if target_frame_count <= 0:
@@ -278,6 +284,23 @@ def extract_resampled_condition_features(
             aligned=aligned_ppg,
             theoretical_frame_period_ms=ppg_frame_period,
             metadata=ppg_metadata,
+        )
+    
+    if "world_aux" in requested:
+        config = WorldFeatureConfig()
+        bundle = analyze_world(waveform, sample_rate, config)
+        raw_world_aux = world_aux_features(bundle.f0, bundle.coded_ap)
+        aligned_world_aux = crop_or_pad_frames(raw_world_aux, target_frame_count)
+        features["world_aux"] = ResampledConditionFeature(
+            name="world_aux",
+            raw=raw_world_aux,
+            aligned=aligned_world_aux,
+            theoretical_frame_period_ms=config.frame_period_ms,
+            metadata={
+                "alignment_method": "crop_or_edge_pad",
+                "coded_ap_channels": bundle.coded_ap.shape[1],
+                "frame_period_ms": config.frame_period_ms,
+            },
         )
 
     return features

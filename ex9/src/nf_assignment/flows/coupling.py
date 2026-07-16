@@ -38,8 +38,57 @@ class AffineCouplingTransform(Transform):
             ``log_det`` is shaped ``[batch]``.
         """
 
-        # TODO
-        raise NotImplementedError
+        # 全体のチャンネル数を得てその半分を変換に用いる
+        # size(1)とすることで
+        channels = x.size(1)
+        c = channels // 2
+
+        # identity / transformed に分ける
+        # 前半(0:c)が固定、後半(c:)が変換に用いられる
+        x_id = x[:, :c]
+        x_tr = x[:, c:]
+
+        # conditioner
+        # 固定要素から導く変換パラメータを計算する
+        # 話者情報や特徴量などconditionerに入力する場合もある
+        if condition is None:
+            h = self.conditioner(x_id)
+        else:
+            h = self.conditioner(x_id, condition=condition, mask=mask)
+
+        # 連結されている2つの要素をチャンネル方向に分割
+        # shiftは平行移動の関数
+        # log_scaleは拡大率の対数(>0)
+        shift, log_scale = torch.chunk(h, 2, dim=1)
+
+        # affine変換
+        y_tr = x_tr * torch.exp(log_scale) + shift
+
+        # mask[batch, 1, frames]の処理
+        # マスクする場所はmaskを掛けることで0になる
+        # 2番目の要素が1であるがこれはbroadcastにより引き伸ばされ各チャンネルに掛けられる
+        if mask is not None:
+            y_tr = y_tr * mask
+            y_id = x_id * mask
+            log_scale = log_scale * mask
+        else:
+            y_id = x_id
+
+        y = torch.cat([y_id, y_tr], dim=1)
+
+        # log determinant(ヤコビアン)
+        # 下三角行列のlog_detを求めるにあたり対角成分の積の対数を求める
+        # 対角成分の積の対数を取るが、右下部分 ∂x_tr/∂y_trはdiag(exp(log_scale))である
+        # そのため対角成分(今回のヤコビアンの値でもある)はexp(∑ᵢ log_scaleᵢ)
+        # log|det(J)| = log( exp(∑ᵢ log_scaleᵢ) )
+        #             = ∑ᵢ log_scaleᵢ   ← log と exp が打ち消し合う
+        #             = log_scale.sum()
+        if x.dim() == 2:
+            log_det = log_scale.sum(dim=1)
+        else:
+            log_det = log_scale.sum(dim=(1, 2))
+
+        return y, log_det
 
     def inverse(
         self,
@@ -61,8 +110,40 @@ class AffineCouplingTransform(Transform):
             ``log_det`` is shaped ``[batch]``.
         """
 
-        # TODO
-        raise NotImplementedError
+        # おおよそForwardと同じ
+        # 逆方向の操作が必要
+        channels = y.size(1)
+        c = channels // 2
+
+        y_id = y[:, :c]
+        y_tr = y[:, c:]
+
+        if condition is None:
+            h = self.conditioner(y_id)
+        else:
+            h = self.conditioner(y_id, condition=condition, mask=mask)
+
+        shift, log_scale = torch.chunk(h, 2, dim=1)
+
+        # inverse affine transform
+        x_tr = (y_tr - shift) * torch.exp(-log_scale)
+
+        if mask is not None:
+            x_tr = x_tr * mask
+            x_id = y_id * mask
+            log_scale = log_scale * mask
+        else:
+            x_id = y_id
+
+        x = torch.cat([x_id, x_tr], dim=1)
+
+        # inverse log determinant
+        if y.dim() == 2:
+            log_det = -log_scale.sum(dim=1)
+        else:
+            log_det = -log_scale.sum(dim=(1, 2))
+
+        return x, log_det
 
 
 class AffineCouplingBlock(Transform):
